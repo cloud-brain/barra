@@ -133,22 +133,18 @@ risk_matrix_m$factor <- factor(risk_matrix_m$factor, levels = names(risk_matrix_
 save(risk_matrix_m, file = 'risk_matrix_barra.RData')
 
 ##指数权重数据--------------------------
-con <- dbConnect(
-  MySQL(),
-  dbname = 'wsy_database',
-  username = myserver$username,
-  password = myserver$password,
-  host = myserver$host,
-  port = myserver$port
-)
+con_rdf <- odbcConnect('wdf', 'dbreader', 'dbreader')
+index_weight <-
+  sqlQuery(
+    con_rdf,
+    "select TRADE_DT as trade_dt, S_CON_WINDCODE as wind_code, I_WEIGHT as weight, S_INFO_WINDCODE as index_code from AINDEXHS300CLOSEWEIGHT",
+    stringsAsFactors = F
+  )
+odbcClose(con_rdf)
 
-index_weight <- dbGetQuery(con, 'select * from stock_weight_index')
-dbDisconnect(con)
+index_weight <- index_weight %>% group_by(trade_dt) %>% mutate(weight = weight / sum(weight)) %>% ungroup
 
-index_weight_m <- index_weight %>% group_by(month = trade_dt %/% 100) %>%
-  filter(trade_dt == max(trade_dt)) %>% ungroup %>% select(-month)
-
-save(index_weight_m, file = 'index_weight.RData')
+save(index_weight, file = 'index_weight.RData')
 
 ##因子数据(月)-----------
 con <- dbConnect(

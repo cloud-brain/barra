@@ -4,6 +4,7 @@ library(tidyr)
 library(ggplot2)
 library(lubridate)
 library(backtest)
+library(multidplyr)
 
 myserver <- options()$sqlserver
 source('相关函数.R')
@@ -15,7 +16,7 @@ load('yield_data.RData')
 
 library(WindR)
 w.start()
-hs300 <- w.wsd("000300.SH","close","2009-01-01","2018-10-25")$Data
+hs300 <- w.wsd("000300.SH","close","2009-01-01","2018-10-31")$Data
 hs300 <- hs300 %>% arrange(DATETIME) %>% transmute(trade_dt = ymd(DATETIME), close = CLOSE, 
                                                    hs300 = cal_yield(close))
 ##相关函数---------
@@ -130,7 +131,7 @@ fun <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len)
       tf_rp2yield(
         rp_data,
         factor_temp,
-        index_data = index_weight_m %>% subset(index_code == '000300.SH') %>% select(-index_code),
+        index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
         risk_name = risk_name[1:risk_len],
         bias,
         in_bench
@@ -151,7 +152,7 @@ fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_
     cluster_copy(tf_rp2yield) %>% 
     cluster_copy(rp_data) %>% 
     cluster_copy(factor_temp) %>%
-    cluster_copy(index_weight_m) %>% 
+    cluster_copy(index_weight) %>% 
     cluster_copy(risk_name) %>% 
     cluster_copy(tf_pfp_bench) %>% 
     cluster_copy(to_yield) %>%
@@ -161,7 +162,7 @@ fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_
     mutate(result = list(tf_rp2yield(
       rp_data,
       factor_temp,
-      index_data = index_weight_m %>% subset(index_code == '000300.SH') %>% select(-index_code),
+      index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
       risk_name = risk_name[1:risk_len],
       bias,
       in_bench
@@ -174,7 +175,7 @@ fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_
          do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result))
 }
 
-total_sq <- fun_p(
+total_sq <- fun(
   rp_data_sq,
   factor_temp_sq,
   factor_name$factor_sq$risk_name,
@@ -192,24 +193,25 @@ total_eq <- fun(
   risk_len = 2:5
 )
 
-total_sq_w <- fun(
+total_sq_w <- fun_p(
   rp_data_sq_w,
   factor_temp_sq_w,
-  factor_name_w$factor_sq$risk_name,
+  factor_name$factor_sq$risk_name,
   bias = 1:3 / 100,
   in_bench = seq(0.75, 0.95, by = 0.05),
-  risk_len = 2:5
+  risk_len = 2:5,
+  cl_len = 3
 )
 
 
-total_sq$result %>% arrange(desc(y_sp))
+total_sq_w$result %>% arrange(desc(y_sp))
 total_eq$result %>% arrange(desc(y_sp))
 
-total_sq$yield %>% group_by(bias, in_bench, risk_len) %>% 
+total_sq_w$yield %>% group_by(bias, in_bench, risk_len) %>% 
   subset(trade_dt > 20170101) %>% 
   do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result) %>% arrange(desc(y_sp))
 
-total_sq$yield %>% subset(bias == 0.02 & in_bench == 0.8 & risk_len == 2) %>% 
+total_sq_w$yield %>% subset(bias == 0.01 & in_bench == 0.95 & risk_len == 2) %>% 
   mutate(trade_dt = ymd(trade_dt)) %>% 
   left_join(hs300, by = 'trade_dt') %>% 
   mutate(zf = zf - hs300) %>% 

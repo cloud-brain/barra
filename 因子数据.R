@@ -1,7 +1,6 @@
 library(RMySQL)
 library(dplyr)
 library(tidyr)
-library(ggplot2)
 library(lubridate)
 library(RODBC)
 myserver <- options()$sqlserver
@@ -1130,5 +1129,6 @@ dbWriteTable(
   )
 )
 dbDisconnect(con)
+
 
 
