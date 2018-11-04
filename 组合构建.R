@@ -1,4 +1,3 @@
-library(RMySQL)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -96,6 +95,7 @@ tf_rp2yield <- function(x, risk_data, index_data, risk_name, bias, in_bench)
   factor_total <- factor_total %>% left_join(risk_data, by = c('trade_dt', 'wind_code')) %>% na.omit
   
   ##转化行业数据为矩阵并剔除一个行业
+  risk_name <- setdiff(risk_name, 'indus')
   factor_total <- data.frame(factor_total %>% select(-indus), 
                              model.matrix( ~ indus + 0, data = factor_total))
   

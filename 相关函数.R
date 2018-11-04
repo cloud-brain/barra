@@ -192,7 +192,7 @@ tf_pfp_bench <- function(r_exp, x_beta, benchmark, bias, in_bench)
   # output <- linp(E = E, F = f, G = G, H = h, Cost = -r_exp,
   #                ispos = T)
   # output$X
-  x_beta <- x_beta[,-which(colMeans(x_beta == 0) == 1)]
+  x_beta <- x_beta[,!(colMeans(x_beta == 0) == 1)]
   num <- length(r_exp)
   ##beta限制
   beta_con <- L_constraint(t(x_beta), dir = rep('==', ncol(x_beta)), rhs = rep(0, ncol(x_beta)))
