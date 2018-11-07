@@ -1,7 +1,4 @@
-library(RMySQL)
-library(dplyr)
-library(tidyr)
-library(ggplot2)
+library(tidyverse)
 library(lubridate)
 library(multidplyr)
 
@@ -96,10 +93,10 @@ get_ic <- function(cl, total_data, yield_data, factor_name, keep = 1)
 ##@alpha：是否优先提取阿尔法因子
 ##@alpha_show：是否展示阿尔法因子数据
 ##@icir_1y_rate_th: 要求胜率的阈值
-get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha = T, alpha_show = F, icir_1y_rate_th = 0.75, end_date = max(factor_data$trade_dt))
+get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha = T, alpha_show = F, icir_1y_rate_th = 0.75, begin_dt = min(factor_data$trade_dt), end_dt = max(factor_data$trade_dt))
 {
   cl <- create_cluster(cl_len)
-  factor_data <- factor_data %>% subset(trade_dt <= end_date)
+  factor_data <- factor_data %>% subset(between(trade_dt, begin_dt, end_dt))
   i <- 1
   factor_name <- 'indus'
   alpha_name <- c()
@@ -107,7 +104,7 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
   adj_og <- 0
   ##获取时间序列计算一年的周期数量
   trade_dt_list <- unique(factor_data$trade_dt)
-  num_1y <- sum(trade_dt_list <= end_date & trade_dt_list > (end_date - 10000))
+  num_1y <- sum(trade_dt_list <= end_dt & trade_dt_list > (end_dt - 10000))
   
   while(i <= max_len)
   {
@@ -116,8 +113,8 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
       summarise(
         adj_r = mean(adj_r),
         icir = mean(coef) / sd(coef) * sqrt(n()),
-        icir_1y = mean(coef[trade_dt > end_date - 10000]) /
-          sd(coef[trade_dt > end_date - 10000]) * sqrt(num_1y),
+        icir_1y = mean(coef[trade_dt > end_dt - 10000]) /
+          sd(coef[trade_dt > end_dt - 10000]) * sqrt(num_1y),
         icir_1y_rate = mean(abs(zoo::rollapplyr(coef, fill = NA, width = num_1y, FUN = function(x) mean(x) / sd(x) * sqrt(num_1y))) > 2, na.rm = T)
       )
     
@@ -159,7 +156,7 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
   return(factor_name)
 }
 
-##icir计算(月度)-------------------
+##icir计算-------------------
 load('yield_data.RData')
 load('factor_data.RData')
 ##全市场
@@ -193,10 +190,36 @@ output <- get_factor(factor_data_zz800 %>% mutate(float_value = sqrt(float_value
 factor_name <- c(factor_name, list(factor_sq_zz800 = output))
 
 
-##icir计算(周度)-------------------
+##周度计算
 load('factor_data_w.RData')
 ##全市场
-
 ##根号加权
 output <- get_factor(factor_data_total_w %>% mutate(float_value = sqrt(float_value)), yield_data_w, alpha_show = T)
 factor_name_w <- list(factor_sq = output)
+
+
+##icir(滚动期)----------------------------------
+load('yield_data.RData')
+load('factor_data.RData')
+##全市场
+
+##根号加权
+trade_list <- seq(ymd(20080101), ymd(20180101), by = 'month')
+windows <- 36
+begin_dt <- trade_list[1:(length(trade_list) - windows)] %>% format('%Y%m%d') %>% as.integer
+end_dt <-  trade_list[(windows + 1):length(trade_list)] %>% format('%Y%m%d') %>% as.integer
+
+result <- tibble()
+for(i in seq_along(begin_dt))
+{
+  output <- get_factor(factor_data_total %>% mutate(float_value = sqrt(float_value)), 
+                       yield_data_m,
+                       begin_dt = begin_dt[i],
+                       end_dt = end_dt[i],
+                       cl_len = 3)
+  result <- rbind(result, 
+                  tibble(begin_dt = begin_dt[i], end_dt = end_dt[i],
+                         factor_name = list(output)))
+}
+
+
