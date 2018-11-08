@@ -1,6 +1,4 @@
-library(dplyr)
-library(tidyr)
-library(ggplot2)
+library(tidyverse)
 library(lubridate)
 library(backtest)
 library(multidplyr)
@@ -83,8 +81,8 @@ to_perform <- function(trade_dt, yield, group_year = F)
 
 }
 
-##将rp转化为组合收益
-tf_rp2yield <- function(x, risk_data, index_data, risk_name, bias, in_bench)
+##将rp转化为权重
+to_weight <- function(x, risk_data, index_data, risk_name, bias, in_bench)
 {
   ##合并权重数据
   factor_total <- x %>% left_join(index_data, by = c('trade_dt', 'wind_code')) %>% 
@@ -111,86 +109,92 @@ tf_rp2yield <- function(x, risk_data, index_data, risk_name, bias, in_bench)
         in_bench = in_bench
       )
     ))
-  temp <- temp %>% unnest(weight)
+  temp %>% unnest(weight)
   
+}
+
+##将rp转化为组合收益
+tf_rp2yield <- function(x, risk_data, index_data, risk_name, bias, in_bench, weight_save = F, min_trade_dt = min(x$trade_dt))
+{
+  temp <- to_weight(x, risk_data, index_data, risk_name, bias, in_bench) %>% subset(trade_dt >= min_trade_dt)
   ##计算净值
-  temp_y <- temp %>% with(., to_yield(trade_dt, wind_code, weight))
+  temp_y <- temp %>% with(., to_yield(trade_dt, wind_code, weight)) %>% subset(trade_dt >= min_trade_dt)
+  
+  if(weight_save)
+  {
+    return(list(weight = temp, yield = temp_y))
+  }else{
+    return(list(yield = temp_y))
+  }
 }
 
 ##组合求解---------------
 load('rp_ir.RData')
 
-fun <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len)
+fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_len = 2, ...)
 {
+  rp_data <- rp_data %>% 
+    left_join(yield_data %>% select(-zf), by = c('trade_dt', 'wind_code')) %>% 
+    subset(suspend == 0) %>% select(-suspend)
+  
   param <- expand.grid(bias = bias, in_bench = in_bench, risk_len = risk_len)
-  temp_total <- mapply(function(bias, in_bench, risk_len) 
-    data.frame(
-      bias = bias,
-      in_bench = in_bench,
-      risk_len = risk_len,
-      tf_rp2yield(
+  if(cl_len > 1)
+  {
+    cl <- create_cluster(cl_len) %>% cluster_library(c('dplyr','tidyr')) %>% 
+      cluster_copy(tf_rp2yield) %>% 
+      cluster_copy(rp_data) %>% 
+      cluster_copy(factor_temp) %>%
+      cluster_copy(index_weight) %>% 
+      cluster_copy(risk_name) %>% 
+      cluster_copy(tf_pfp_bench) %>% 
+      cluster_copy(to_yield) %>%
+      cluster_copy(yield_data)
+    
+    temp_total <- param %>% partition(bias, in_bench, risk_len, cluster = cl) %>% 
+      mutate(result = list(tf_rp2yield(
         rp_data,
         factor_temp,
         index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
         risk_name = risk_name[1:risk_len],
         bias,
-        in_bench
-      )
-    ), bias = param$bias, in_bench = param$in_bench, risk_len = param$risk_len, SIMPLIFY = F) %>% 
-    do.call('rbind', .) %>% 
-    subset(trade_dt >= 20100101)
+        in_bench,...
+      ))) %>% collect()
+  }else{
+    temp_total <- param %>% group_by(bias, in_bench, risk_len) %>% 
+      mutate(result = list(tf_rp2yield(
+        rp_data,
+        factor_temp,
+        index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
+        risk_name = risk_name[1:risk_len],
+        bias,
+        in_bench,...
+      )))
+  }
   
-  list(yield = temp_total,
-       result = temp_total %>% 
-         group_by(bias, in_bench, risk_len) %>% arrange(trade_dt) %>%
-         do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result))
+  temp_total %>% mutate(result = map(result, function(x)
+    c(x,
+      list(
+        perform = with(x$yield %>% arrange(trade_dt),
+                       to_perform(trade_dt, zf))
+      ))))
 }
 
-fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_len = 2)
-{
-  cl <- create_cluster(cl_len) %>% cluster_library(c('dplyr','tidyr')) %>% 
-    cluster_copy(tf_rp2yield) %>% 
-    cluster_copy(rp_data) %>% 
-    cluster_copy(factor_temp) %>%
-    cluster_copy(index_weight) %>% 
-    cluster_copy(risk_name) %>% 
-    cluster_copy(tf_pfp_bench) %>% 
-    cluster_copy(to_yield) %>%
-    cluster_copy(yield_data)
-  param <- expand.grid(bias = bias, in_bench = in_bench, risk_len = risk_len)
-  temp_total <- param %>% partition(bias, in_bench, risk_len, cluster = cl) %>% 
-    mutate(result = list(tf_rp2yield(
-      rp_data,
-      factor_temp,
-      index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
-      risk_name = risk_name[1:risk_len],
-      bias,
-      in_bench
-    ))) %>% collect() %>% unnest(result) %>% 
-    subset(trade_dt >= 20100101)
-  
-  list(yield = temp_total,
-       result = temp_total %>% 
-         group_by(bias, in_bench, risk_len) %>% arrange(trade_dt) %>%
-         do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result))
-}
-
-total_sq <- fun(
+total_sq <- fun_p(
   rp_data_sq,
   factor_temp_sq,
   factor_name$factor_sq$risk_name,
   bias = 1:3 / 100,
   in_bench = seq(0.75, 0.95, by = 0.05),
-  risk_len = 2:5
+  risk_len = 2:10
 )
 
-total_eq <- fun(
+total_eq <- fun_p(
   rp_data_eq,
   factor_temp_eq,
   factor_name$factor_eq$risk_name,
   bias = 1:3 / 100,
   in_bench = seq(0.75, 0.95, by = 0.05),
-  risk_len = 2:5
+  risk_len = 2:10
 )
 
 total_sq_w <- fun_p(
@@ -199,20 +203,33 @@ total_sq_w <- fun_p(
   factor_name$factor_sq$risk_name,
   bias = 1:3 / 100,
   in_bench = seq(0.75, 0.95, by = 0.05),
-  risk_len = 2:5,
-  cl_len = 3
+  risk_len = 2:10
 )
 
+total_sq$result %>% arrange(desc(y_m))
+total_sq$result %>% arrange(desc(y_sp))
 
-total_sq_w$result %>% arrange(desc(y_sp))
-total_eq$result %>% arrange(desc(y_sp))
-
-total_sq_w$yield %>% group_by(bias, in_bench, risk_len) %>% 
+total_sq$yield %>% group_by(bias, in_bench, risk_len) %>% 
   subset(trade_dt > 20170101) %>% 
-  do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result) %>% arrange(desc(y_sp))
+  do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result) %>% arrange(desc(y_m))
 
-total_sq_w$yield %>% subset(bias == 0.01 & in_bench == 0.95 & risk_len == 2) %>% 
+total_sq$yield %>% subset(bias == 0.03 & in_bench == 0.95 & risk_len == 7) %>% 
   mutate(trade_dt = ymd(trade_dt)) %>% 
   left_join(hs300, by = 'trade_dt') %>% 
   mutate(zf = zf - hs300) %>% 
-  ggplot(aes(x = ymd(trade_dt), y = cumprod(zf + 1))) + geom_line()
+  ggplot(aes(x = ymd(trade_dt), y = cumsum(zf))) + geom_line()
+
+param <- tibble(bias = c(0.03,0.01), in_bench = c(0.95, 0.8), risk_len = c(7,9))
+total_sq_ch <- param %>% 
+  group_by(bias, in_bench, risk_len) %>% 
+  mutate(result = list(tf_rp2yield(
+    rp_data_sq,
+    factor_temp_sq,
+    index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
+    risk_name = factor_name$factor_sq$risk_name[1:risk_len],
+    bias,
+    in_bench,
+    weight_save = T
+  )))
+
+save(total_sq, total_eq, total_sq_w, total_sq_ch, file = 'result_data.RData')

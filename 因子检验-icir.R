@@ -210,7 +210,7 @@ begin_dt <- trade_list[1:(length(trade_list) - windows)] %>% format('%Y%m%d') %>
 end_dt <-  trade_list[(windows + 1):length(trade_list)] %>% format('%Y%m%d') %>% as.integer
 
 result <- tibble()
-for(i in seq_along(begin_dt))
+for(i in 58:length(begin_dt))
 {
   output <- get_factor(factor_data_total %>% mutate(float_value = sqrt(float_value)), 
                        yield_data_m,
@@ -220,6 +220,7 @@ for(i in seq_along(begin_dt))
   result <- rbind(result, 
                   tibble(begin_dt = begin_dt[i], end_dt = end_dt[i],
                          factor_name = list(output)))
+  gc(T)
 }
 
 
