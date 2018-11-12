@@ -1,5 +1,4 @@
-library(dplyr)
-library(tidyr)
+library(tidyverse)
 library(multidplyr)
 
 source('相关函数.R')
@@ -7,10 +6,9 @@ source('相关函数.R')
 load('yield_data.RData')
 
 load('factor_data.RData')
-load('factor_name.RData')
-
-load('factor_name_w.RData')
 load('factor_data_w.RData')
+
+load('factor_name.RData')
 ##相关函数-----------
 ##处理因子数据,按顺序正交
 to_factor <- function(factor_data, factor_name)
@@ -35,7 +33,7 @@ to_factor <- function(factor_data, factor_name)
 ##因子数据计算预期收益
 to_rp <- function(alpha_name, factor_temp, yield_data)
 {
-  coef_temp <- yield_data %>% left_join(factor_temp, by = c('trade_dt', 'wind_code')) %>% na.omit
+  coef_temp <- yield_data %>% select(-suspend) %>% left_join(factor_temp, by = c('trade_dt', 'wind_code')) %>% na.omit
   coef_temp <- coef_temp %>% group_by(trade_dt) %>% 
     do(lm_data = lm(yield ~ ., data = select(., -trade_dt, -wind_code, -float_value), weight = .$float_value))
   coef_temp <- coef_temp %>% 
@@ -132,24 +130,83 @@ for(i in temp$lma) print(i)
 
 ##rp计算-------------------
 ##计算rp
+##根号加权
 factor_temp_sq <- to_factor(factor_data_total %>% 
                               mutate(float_value = sqrt(float_value)), 
                             factor_name$factor_sq$factor_name)
 rp_data_sq <- to_rp(factor_name$factor_sq$alpha_name, factor_temp_sq, yield_data_m) 
+rp_data_sq <- rp_data_sq %>% left_join(factor_temp_sq, by = c('trade_dt','wind_code'))
 
+##等权
 factor_temp_eq <- to_factor(factor_data_total %>% 
                               mutate(float_value = 1), 
                             factor_name$factor_eq$factor_name)
 rp_data_eq <- to_rp(factor_name$factor_eq$alpha_name, factor_temp_eq, yield_data_m) 
+rp_data_eq <- rp_data_eq %>% left_join(factor_temp_eq, by = c('trade_dt','wind_code'))
 
-save(rp_data_sq, factor_temp_sq, 
-     rp_data_eq, factor_temp_eq,
-     file = 'rp_ir.RData')
-
+##周度根号加权
 factor_temp_sq_w <- to_factor(factor_data_total_w %>% 
                                 mutate(float_value = sqrt(float_value)), 
                               factor_name_w$factor_sq$factor_name)
 rp_data_sq_w <- to_rp(factor_name_w$factor_sq$alpha_name, factor_temp_sq_w, yield_data_w) 
+rp_data_sq_w <- rp_data_sq_w %>% left_join(factor_temp_sq_w, by = c('trade_dt','wind_code'))
 
-save(factor_temp_sq_w, rp_data_sq_w,
-     file = 'rp_ir_w.RData')
+##根号加权_5年
+factor_temp_sq_5y <- factor_name$factor_sq_5y %>%
+  transmute(trade_dt = end_dt, 
+            factor_name,
+            result = pmap(list(begin_dt, end_dt, factor_name),
+                          function(begin_dt, end_dt, factor_name)
+                            to_factor(
+                              factor_data_total %>% 
+                                subset(between(trade_dt, begin_dt, end_dt)) %>%
+                                mutate(float_value = sqrt(float_value)),
+                              factor_name$factor_name
+                            )))
+
+rp_data_sq_5y <- factor_temp_sq_5y %>% 
+  transmute(value = pmap(list(factor_name, result, dt = trade_dt), 
+                         function(factor_name, result, dt) 
+                           to_rp(factor_name$alpha_name, result, yield_data_m) %>% 
+                           subset(trade_dt == dt))) %>% unnest
+
+factor_temp_sq_5y <- factor_temp_sq_5y %>% 
+  mutate(result = map2(result, trade_dt, function(x,y) x %>% subset(trade_dt == y)))
+
+rp_data_sq_5y <- rp_data_sq_5y %>% nest(wind_code, value, .key = 'value') %>%
+  left_join(factor_temp_sq_5y %>% select(trade_dt, result), by = c('trade_dt')) %>% 
+  mutate(value = map2(value, result, function(x,y) x %>% left_join(y, by = 'wind_code'))) %>% select(-result)
+
+##根号加权_3年
+factor_temp_sq_3y <- factor_name$factor_sq_3y %>%
+  transmute(trade_dt = end_dt, 
+            factor_name,
+            result = pmap(list(begin_dt, end_dt, factor_name),
+                          function(begin_dt, end_dt, factor_name)
+                            to_factor(
+                              factor_data_total %>% 
+                                subset(between(trade_dt, begin_dt, end_dt)) %>%
+                                mutate(float_value = sqrt(float_value)),
+                              factor_name$factor_name
+                            )))
+
+rp_data_sq_3y <- factor_temp_sq_3y %>% 
+  transmute(value = pmap(list(factor_name, result, dt = trade_dt), 
+                         function(factor_name, result, dt) 
+                           to_rp(factor_name$alpha_name, result, yield_data_m) %>% 
+                           subset(trade_dt == dt))) %>% unnest
+
+factor_temp_sq_3y <- factor_temp_sq_3y %>% 
+  mutate(result = map2(result, trade_dt, function(x,y) x %>% subset(trade_dt == y)))
+
+rp_data_sq_3y <- rp_data_sq_3y %>% nest(wind_code, value, .key = 'value') %>%
+  left_join(factor_temp_sq_3y %>% select(trade_dt, result), by = c('trade_dt')) %>% 
+  mutate(value = map2(value, result, function(x,y) x %>% left_join(y, by = 'wind_code'))) %>% select(-result)
+
+
+save(rp_data_sq, 
+     rp_data_eq, 
+     rp_data_sq_w,
+     rp_data_sq_5y, 
+     rp_data_sq_3y, 
+     file = 'rp_ir.RData')

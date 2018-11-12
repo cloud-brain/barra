@@ -202,25 +202,39 @@ factor_name_w <- list(factor_sq = output)
 load('yield_data.RData')
 load('factor_data.RData')
 ##全市场
-
-##根号加权
-trade_list <- seq(ymd(20080101), ymd(20180101), by = 'month')
-windows <- 36
-begin_dt <- trade_list[1:(length(trade_list) - windows)] %>% format('%Y%m%d') %>% as.integer
-end_dt <-  trade_list[(windows + 1):length(trade_list)] %>% format('%Y%m%d') %>% as.integer
-
-result <- tibble()
-for(i in 58:length(begin_dt))
+fun_m <- function(windows)
 {
-  output <- get_factor(factor_data_total %>% mutate(float_value = sqrt(float_value)), 
-                       yield_data_m,
-                       begin_dt = begin_dt[i],
-                       end_dt = end_dt[i],
-                       cl_len = 3)
-  result <- rbind(result, 
-                  tibble(begin_dt = begin_dt[i], end_dt = end_dt[i],
-                         factor_name = list(output)))
-  gc(T)
+  trade_list <- unique(factor_data_total$trade_dt) %>% sort
+  windows <- windows - 1
+  begin_dt <- trade_list[1:(length(trade_list) - windows)]
+  end_dt <-  trade_list[(windows + 1):length(trade_list)]
+  
+  result <- tibble()
+  for(i in 1:length(begin_dt))
+  {
+    output <- get_factor(factor_data_total %>% mutate(float_value = sqrt(float_value)), 
+                         yield_data_m,
+                         begin_dt = begin_dt[i],
+                         end_dt = end_dt[i],
+                         cl_len = 3)
+    result <- rbind(result, 
+                    tibble(begin_dt = begin_dt[i], end_dt = end_dt[i],
+                           factor_name = list(output)))
+    gc(T)
+  }
 }
+
+
+##根号加权_3y
+factor_sq_3y <- fun_m(36)
+factor_name <- c(factor_name, list(factor_sq_3y = factor_sq_3y))
+
+##根号加权_5y
+factor_sq_5y <- fun_m(60)
+factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_5y))
+
+save(factor_name, file = 'factor_name.RData')
+
+
 
 

@@ -72,4 +72,4 @@ total_acount <- acount_sq_sp$show_total_acount() %>%
   left_join(hs300, by = c('date')) %>% 
   mutate(benchmark = hs300/hs300[1] *acount[1]) %>% select(-hs300)
 
-summary_acount(total_acount, benchmark = F)
+summary_acount(total_acount, benchmark = T)
