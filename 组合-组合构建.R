@@ -157,8 +157,8 @@ fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_
         rp_data %>% select(-value),
         index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
         risk_name = risk_name[1:risk_len],
-        bias,
-        in_bench,
+        bias = bias,
+        in_bench = in_bench,
         weight_save
       ))) %>% collect()
   }else{
@@ -202,8 +202,8 @@ fun_nest_p <- function(rp_data, risk_name, bias, in_bench, risk_len, cl_len = 2,
                     x %>% select(-value),
                     index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
                     risk_name = y$risk_name[1:risk_len],
-                    bias,
-                    in_bench
+                    bias = bias,
+                    in_bench = in_bench
                   ))) %>% unnest
     
     ##计算净值
@@ -227,16 +227,16 @@ fun_nest_p <- function(rp_data, risk_name, bias, in_bench, risk_len, cl_len = 2,
     
     temp_total <- param %>% partition(bias, in_bench, risk_len, cluster = cl) %>% 
       mutate(result = list(fun(
-        risk_len,
-        bias,
-        in_bench
+        bias = bias,
+        in_bench = in_bench,
+        risk_len = risk_len
       ))) %>% collect()
   }else{
     temp_total <- param %>% group_by(bias, in_bench, risk_len) %>%
       mutate(weight = list(fun(
-        risk_len,
-        bias,
-        in_bench
+        bias = bias,
+        in_bench = in_bench,
+        risk_len = risk_len
       )))
   }
   
@@ -280,34 +280,17 @@ total_sq_3y <- fun_nest_p(
   factor_name$factor_sq_3y,
   bias = 1:10 / 100,
   in_bench = seq(0.7, 0.95, by = 0.05),
-  risk_len = 2:10,
+  risk_len = 6:10,
   cl_len = 2
 )
 
-total_sq$result %>% arrange(desc(y_m))
-total_sq$result %>% arrange(desc(y_sp))
+# total_sq_5y <- fun_nest_p(
+#   rp_data_sq_5y,
+#   factor_name$factor_sq_5y,
+#   bias = 1:10 / 100,
+#   in_bench = seq(0.7, 0.95, by = 0.05),
+#   risk_len = 6:10,
+#   cl_len = 2
+# )
 
-total_sq$yield %>% group_by(bias, in_bench, risk_len) %>% 
-  subset(trade_dt > 20170101) %>% 
-  do(result = to_perform(.$trade_dt, .$zf)) %>% unnest(result) %>% arrange(desc(y_m))
-
-total_sq$yield %>% subset(bias == 0.03 & in_bench == 0.95 & risk_len == 7) %>% 
-  mutate(trade_dt = ymd(trade_dt)) %>% 
-  left_join(hs300, by = 'trade_dt') %>% 
-  mutate(zf = zf - hs300) %>% 
-  ggplot(aes(x = ymd(trade_dt), y = cumsum(zf))) + geom_line()
-
-param <- tibble(bias = c(0.03,0.01), in_bench = c(0.95, 0.8), risk_len = c(7,9))
-total_sq_ch <- param %>% 
-  group_by(bias, in_bench, risk_len) %>% 
-  mutate(result = list(tf_rp2yield(
-    rp_data_sq,
-    factor_temp_sq,
-    index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
-    risk_name = factor_name$factor_sq$risk_name[1:risk_len],
-    bias,
-    in_bench,
-    weight_save = T
-  )))
-
-save(total_sq, total_eq, total_sq_w, total_sq_ch, file = 'result_data.RData')
+save(total_sq, total_eq, total_sq_w, total_sq_3y, total_sq_5y, file = 'result_weight.RData')

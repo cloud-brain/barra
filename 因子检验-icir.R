@@ -201,10 +201,11 @@ factor_name_w <- list(factor_sq = output)
 ##icir(滚动期)----------------------------------
 load('yield_data.RData')
 load('factor_data.RData')
-##全市场
-fun_m <- function(windows)
+load('factor_data_w.RData')
+
+fun_m <- function(x, yield_data, windows, cl_len = 3)
 {
-  trade_list <- unique(factor_data_total$trade_dt) %>% sort
+  trade_list <- unique(x$trade_dt) %>% sort
   windows <- windows - 1
   begin_dt <- trade_list[1:(length(trade_list) - windows)]
   end_dt <-  trade_list[(windows + 1):length(trade_list)]
@@ -212,11 +213,11 @@ fun_m <- function(windows)
   result <- tibble()
   for(i in 1:length(begin_dt))
   {
-    output <- get_factor(factor_data_total %>% mutate(float_value = sqrt(float_value)), 
-                         yield_data_m,
+    output <- get_factor(x %>% mutate(float_value = sqrt(float_value)), 
+                         yield_data,
                          begin_dt = begin_dt[i],
                          end_dt = end_dt[i],
-                         cl_len = 3)
+                         cl_len = cl_len)
     result <- rbind(result, 
                     tibble(begin_dt = begin_dt[i], end_dt = end_dt[i],
                            factor_name = list(output)))
@@ -225,13 +226,18 @@ fun_m <- function(windows)
 }
 
 
-##根号加权_3y
-factor_sq_3y <- fun_m(36)
+##全市场_根号加权_3y
+factor_sq_3y <- fun_m(factor_data_total, yield_data_m, 36)
 factor_name <- c(factor_name, list(factor_sq_3y = factor_sq_3y))
 
-##根号加权_5y
-factor_sq_5y <- fun_m(60)
+##全市场_根号加权_5y
+factor_sq_5y <- fun_m(factor_data_total, yield_data_m, 60)
 factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_5y))
+
+##全市场周度_根号加权_3y
+factor_sq_w_3y <- fun_m(factor_data_total_w, yield_data_w, 147)
+factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_w_3y))
+
 
 save(factor_name, file = 'factor_name.RData')
 
