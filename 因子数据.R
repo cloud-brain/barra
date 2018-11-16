@@ -1,6 +1,5 @@
 library(RMySQL)
-library(dplyr)
-library(tidyr)
+library(tidyverse)
 library(lubridate)
 library(RODBC)
 myserver <- options()$sqlserver
