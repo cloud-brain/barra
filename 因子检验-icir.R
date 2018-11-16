@@ -244,3 +244,24 @@ save(factor_name, file = 'factor_name.RData')
 
 
 
+
+##结果展示-----------
+show_factor_name <- function(factor_name_d)
+{
+  fun <- function(x)
+  {
+    tibble(factor_name = x$factor_name) %>% 
+      mutate(type = ifelse(factor_name %in% x$alpha_name, 'alpha', 'risk'),
+             num = 1:n()) 
+  }
+  
+  factor_name_d <- factor_name_d %>% transmute(end_dt,
+                                               factor_name = map(factor_name, fun)) %>%
+    unnest(factor_name) %>% subset(factor_name != 'indus') 
+  
+  print(factor_name_d %>% 
+          ggplot(aes(x = ymd(end_dt), y = num, fill = type)) + geom_bar(stat = 'identity') + 
+          facet_wrap(factor_name~.))
+}
+
+show_factor_name(factor_name$factor_sq_5y)
