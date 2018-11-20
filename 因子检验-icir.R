@@ -12,9 +12,8 @@ source('相关函数.R')
 ##@yield_data: 与因子频率对应的收益率数据
 ##@factor_name: 因子池
 ##@keep：不进行正交的因子数量
-get_ic <- function(cl, total_data, yield_data, factor_name, keep = 1)
+get_ic <- function(cl = NULL, total_data, yield_data, factor_name, keep = 1)
 {
-  require(parallel)
   ##因子数量大于固定数量时按因子进入次序正交
   if(length(factor_name) > keep)
   {
@@ -50,7 +49,7 @@ get_ic <- function(cl, total_data, yield_data, factor_name, keep = 1)
   ##@factor_name 因子名称
   fun <- function(x)
   {
-    ##对因子剔除共线性
+    ##对需要检验的因子剔除共线性
     output_temp <- total_data %>% select(trade_dt, wind_code, one_of(x)) %>% 
       left_join(factor_temp, by = c('wind_code', 'trade_dt')) %>% 
       group_by(trade_dt) %>% do(value = data.frame(wind_code = .$wind_code, 
@@ -73,14 +72,20 @@ get_ic <- function(cl, total_data, yield_data, factor_name, keep = 1)
     # print(i)
   }
   
-  cl %>% cluster_library(c('dplyr','tidyr')) %>% cluster_copy(total_data) %>% 
-    cluster_copy(factor_temp) %>% cluster_copy(orthogon) %>% 
-    cluster_copy(factor_name)
   
-  output <- parLapplyLB(cl, setdiff(names(total_data), c('trade_dt', 'wind_code', 'float_value',factor_name)), fun) %>%
-    do.call('rbind', .)
-  
-  output
+  if(is.null(cl))
+  {
+    output <- lapply(setdiff(names(total_data), c('trade_dt', 'wind_code', 'float_value',factor_name)), fun) %>%
+      do.call('rbind', .)
+  }else{
+    cl %>% cluster_library(c('dplyr','tidyr')) %>% cluster_copy(total_data) %>% 
+      cluster_copy(factor_temp) %>% cluster_copy(orthogon) %>% 
+      cluster_copy(factor_name)
+    
+    output <- parLapplyLB(cl, setdiff(names(total_data), c('trade_dt', 'wind_code', 'float_value',factor_name)), fun) %>%
+      do.call('rbind', .)
+  }
+  return(output)
 }
 
 ##正交因子池后计算因子的收益序列
@@ -95,7 +100,14 @@ get_ic <- function(cl, total_data, yield_data, factor_name, keep = 1)
 ##@icir_1y_rate_th: 要求胜率的阈值
 get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha = T, alpha_show = F, icir_1y_rate_th = 0.75, begin_dt = min(factor_data$trade_dt), end_dt = max(factor_data$trade_dt))
 {
-  cl <- create_cluster(cl_len)
+  if(cl_len > 1)
+  {
+    require(parallel)
+    cl <- create_cluster(cl_len)
+  }else{
+    cl <- NULL
+  }
+  
   factor_data <- factor_data %>% subset(between(trade_dt, begin_dt, end_dt))
   i <- 1
   factor_name <- 'indus'
@@ -109,6 +121,7 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
   while(i <= max_len)
   {
     f_list <- get_ic(cl, factor_data, yield_data, factor_name)
+    ##计算调整后解释度，整体的icir，近1年的icir及滚动一年icir显著的比例
     temp <- f_list %>% group_by(type) %>%
       summarise(
         adj_r = mean(adj_r),
@@ -118,13 +131,14 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
         icir_1y_rate = mean(abs(zoo::rollapplyr(coef, fill = NA, width = num_1y, FUN = function(x) mean(x) / sd(x) * sqrt(num_1y))) > 2, na.rm = T)
       )
     
+    ##若需要提取alpha则加入满足标准的alpha因子
     if(alpha)
     {
       if(alpha_show)
       {
         print(temp %>% arrange(desc(icir)) %>% head)
       }
-      temp_alpha <- temp %>% arrange(desc(abs(icir))) %>% subset(abs(icir) > 2 & abs(icir_1y) > 2 & icir_1y_rate > icir_1y_rate_th) %>% arrange(desc(icir_1y_rate))
+      temp_alpha <- temp %>% arrange(desc(abs(icir))) %>% subset(abs(icir) > 2 & abs(icir_1y) > 2 & icir_1y_rate > icir_1y_rate_th) %>% arrange(desc(icir_1y_rate, icir_1y))
       if(nrow(temp_alpha) > 0)
       {
         factor_name <- c(factor_name, temp_alpha$type[1] %>% as.character)
@@ -136,6 +150,7 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
         next
       }
     }
+    ##未成功提取alpha因子时，选择解释度最高的风险因子
     temp_adj <- temp %>% arrange(desc(adj_r))
     factor_name <- c(factor_name, temp_adj$type[1] %>% as.character)
     if(temp_adj$adj_r[1] >= adj_og)
@@ -160,33 +175,41 @@ get_factor <- function(factor_data, yield_data, cl_len = 2, max_len = 10, alpha 
 load('yield_data.RData')
 load('factor_data.RData')
 ##全市场
-
 trunc_95 <- function(x)
 {
   x[x > quantile(x, 0.95)] <- quantile(x, 0.95)
   x
 }
 
+fun_total <- function(x, yield_data, cl_len = 3)
+{
+  result <- tibble(begin_dt = min(x$trade_dt),
+                   end_dt = max(x$trade_dt),
+                   factor_name = get_factor(x, yield_data, cl_len = cl_len))
+  
+  return(result)
+}
+
 ##根号加权
-output <- get_factor(factor_data_total %>% mutate(float_value = sqrt(float_value)), yield_data_m)
+output <- fun_total(factor_data_total %>% mutate(float_value = sqrt(float_value)), yield_data_m)
 factor_name <- list(factor_sq = output)
 
 ##等权
-output <- get_factor(factor_data_total %>% mutate(float_value = 1), yield_data_m)
+output <- fun_total(factor_data_total %>% mutate(float_value = 1), yield_data_m)
 factor_name <- c(factor_name, list(factor_eq = output))
 
 ##根号截尾
-output <- get_factor(factor_data_total %>% group_by(trade_dt) %>%
+output <- fun_total(factor_data_total %>% group_by(trade_dt) %>%
                        mutate(float_value = trunc_95(sqrt(float_value))) %>% ungroup,
                      yield_data_m)
 factor_name <- c(factor_name, list(factor_tr = output))
 
 ##沪深300根号加权
-output <- get_factor(factor_data_hs300 %>% mutate(float_value = sqrt(float_value)), yield_data_m, alpha_show = T, icir_1y_rate_th = 0.5)
+output <- fun_total(factor_data_hs300 %>% mutate(float_value = sqrt(float_value)), yield_data_m, alpha_show = T, icir_1y_rate_th = 0.5)
 factor_name <- c(factor_name, list(factor_sq_hs300 = output))
 
 ##中证800根号加权
-output <- get_factor(factor_data_zz800 %>% mutate(float_value = sqrt(float_value)), yield_data_m, alpha_show = T, icir_1y_rate_th = 0.5)
+output <- fun_total(factor_data_zz800 %>% mutate(float_value = sqrt(float_value)), yield_data_m, alpha_show = T, icir_1y_rate_th = 0.5)
 factor_name <- c(factor_name, list(factor_sq_zz800 = output))
 
 
@@ -203,39 +226,52 @@ load('yield_data.RData')
 load('factor_data.RData')
 load('factor_data_w.RData')
 
-fun_m <- function(x, yield_data, windows, cl_len = 3)
+fun_roll <- function(x, yield_data, windows, cl_len = 3)
 {
   trade_list <- unique(x$trade_dt) %>% sort
   windows <- windows - 1
-  begin_dt <- trade_list[1:(length(trade_list) - windows)]
-  end_dt <-  trade_list[(windows + 1):length(trade_list)]
+  result <- tibble(begin_dt = trade_list[1:(length(trade_list) - windows)],
+                   end_dt = trade_list[(windows + 1):length(trade_list)])
   
-  result <- tibble()
-  for(i in 1:length(begin_dt))
+  if(cl_len > 1)
   {
-    output <- get_factor(x %>% mutate(float_value = sqrt(float_value)), 
-                         yield_data,
-                         begin_dt = begin_dt[i],
-                         end_dt = end_dt[i],
-                         cl_len = cl_len)
-    result <- rbind(result, 
-                    tibble(begin_dt = begin_dt[i], end_dt = end_dt[i],
-                           factor_name = list(output)))
-    gc(T)
+    cl <- create_cluster(cl_len)
+    cl %>% cluster_copy(x) %>% cluster_copy(yield_data) %>% 
+      cluster_copy(get_factor) %>% cluster_copy(get_ic) %>% 
+      cluster_copy(orthogon) %>% cluster_library('tidyverse')
+    result <- result %>% partition(begin_dt, end_dt, cluster = cl) %>% 
+      mutate(factor_name = get_factor(
+        x,
+        yield_data,
+        begin_dt = begin_dt,
+        end_dt = end_dt,
+        cl_len = 1
+      )) %>% collect()
+  }else{
+    result <- result %>% group_by(begin_dt, end_dt) %>% 
+      mutate(factor_name = get_factor(
+        x,
+        yield_data,
+        begin_dt = begin_dt,
+        end_dt = end_dt,
+        cl_len = 1
+      ))
   }
+  
+  return(result)
 }
 
 
 ##全市场_根号加权_3y
-factor_sq_3y <- fun_m(factor_data_total, yield_data_m, 36)
+factor_sq_3y <- fun_roll(factor_data_total %>% mutate(float_value = sqrt(float_value)), yield_data_m, 36)
 factor_name <- c(factor_name, list(factor_sq_3y = factor_sq_3y))
 
 ##全市场_根号加权_5y
-factor_sq_5y <- fun_m(factor_data_total, yield_data_m, 60)
+factor_sq_5y <- fun_roll(factor_data_total %>% mutate(float_value = sqrt(float_value)), yield_data_m, 60)
 factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_5y))
 
 ##全市场周度_根号加权_3y
-factor_sq_w_3y <- fun_m(factor_data_total_w, yield_data_w, 147)
+factor_sq_w_3y <- fun_roll(factor_data_total_w %>% mutate(float_value = sqrt(float_value)), yield_data_w, 147)
 factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_w_3y))
 
 
