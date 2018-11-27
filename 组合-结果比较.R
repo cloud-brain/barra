@@ -1,5 +1,7 @@
 library(tidyverse)
 library(lubridate)
+
+##相关函数------------------
 to_perform <- function(trade_dt, yield, group_year = F)
 {
   temp <- data.frame(trade_dt, yield)
@@ -25,7 +27,6 @@ to_perform <- function(trade_dt, yield, group_year = F)
   
 }
 
-
 get_perform <- function(x, end_date = NULL)
 {
   if(is.null(end_date))
@@ -41,7 +42,6 @@ get_perform <- function(x, end_date = NULL)
   
 }
 
-
 yield_sd_line <- function(x, ...)
 {
   x <- x %>% get_perform(...) 
@@ -55,6 +55,8 @@ yield_sd_line <- function(x, ...)
   x %>% select(-num)
 }
 
+##结果------------------
+load('result_weight.RData')
 total_eq %>% get_perform %>% arrange(desc(y_sp)) %>% head(5)
 total_sq %>% get_perform %>% arrange(desc(y_sp)) %>% head(5)
 total_sq_w %>% get_perform %>% arrange(desc(y_sp)) %>% head(5)
@@ -63,7 +65,7 @@ total_sq_3y %>% get_perform %>% arrange(desc(y_sp)) %>% head(5)
 end_date <- 20120101
 rbind(cbind(type = 'eq', yield_sd_line(total_eq, end_date = end_date)),
       cbind(type = 'sq', yield_sd_line(total_sq, end_date = end_date)),
-      cbind(type = 'sq_w', yield_sd_line(total_sq_w, end_date = end_date)),
+      cbind(type = 'sq_w', yield_sd_line(total_sq_w %>% mutate(risk_len = 1, in_bench = 1), end_date = end_date)),
       cbind(type = 'sq_3y', yield_sd_line(total_sq_3y, end_date = end_date)),
       cbind(type = 'sq_5y', yield_sd_line(total_sq_5y, end_date = end_date))) %>% 
   ggplot(aes(x = y_sd, y = y_m, color = type)) + geom_line(size = 2)  

@@ -226,36 +226,46 @@ load('yield_data.RData')
 load('factor_data.RData')
 load('factor_data_w.RData')
 
-fun_roll <- function(x, yield_data, windows, cl_len = 3)
+fun_roll <- function(x, yield_data, windows, cl_len = 3, if_save = F)
 {
   trade_list <- unique(x$trade_dt) %>% sort
   windows <- windows - 1
   result <- tibble(begin_dt = trade_list[1:(length(trade_list) - windows)],
                    end_dt = trade_list[(windows + 1):length(trade_list)])
+  fun <- function(begin_dt, end_dt)
+  {
+    output <- get_factor(
+      x,
+      yield_data,
+      begin_dt = begin_dt,
+      end_dt = end_dt,
+      cl_len = 1
+    )
+    if(if_save)
+    {
+      save(output, file = paste0('C:/Users/lkj/Desktop/strategy/barra/data/',begin_dt, end_dt, '.RData'))
+    }
+    return(output)
+  }
   
   if(cl_len > 1)
   {
     cl <- create_cluster(cl_len)
     cl %>% cluster_copy(x) %>% cluster_copy(yield_data) %>% 
       cluster_copy(get_factor) %>% cluster_copy(get_ic) %>% 
-      cluster_copy(orthogon) %>% cluster_library('tidyverse')
-    result <- result %>% partition(begin_dt, end_dt, cluster = cl) %>% 
-      mutate(factor_name = get_factor(
-        x,
-        yield_data,
-        begin_dt = begin_dt,
-        end_dt = end_dt,
-        cl_len = 1
-      )) %>% collect()
+      cluster_copy(orthogon) %>% cluster_copy(fun) %>% 
+      cluster_copy(if_save) %>% 
+      cluster_library('tidyverse')
+    result <-
+      result %>% partition(begin_dt, end_dt, cluster = cl) %>%
+      mutate(factor_name = map2(begin_dt, end_dt, function(x, y)
+        fun(begin_dt = begin_dt,
+            end_dt = end_dt))) %>% collect()
   }else{
     result <- result %>% group_by(begin_dt, end_dt) %>% 
-      mutate(factor_name = get_factor(
-        x,
-        yield_data,
-        begin_dt = begin_dt,
-        end_dt = end_dt,
-        cl_len = 1
-      ))
+      mutate(factor_name = map2(begin_dt, end_dt, function(x, y)
+        fun(begin_dt = begin_dt,
+            end_dt = end_dt)))
   }
   
   return(result)
@@ -271,7 +281,7 @@ factor_sq_5y <- fun_roll(factor_data_total %>% mutate(float_value = sqrt(float_v
 factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_5y))
 
 ##全市场周度_根号加权_3y
-factor_sq_w_3y <- fun_roll(factor_data_total_w %>% mutate(float_value = sqrt(float_value)), yield_data_w, 147)
+factor_sq_w_3y <- fun_roll(factor_data_total_w %>% mutate(float_value = sqrt(float_value)), yield_data_w, 147, cl_len = 1, if_save = T)
 factor_name <- c(factor_name, list(factor_sq_5y = factor_sq_w_3y))
 
 

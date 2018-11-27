@@ -8,7 +8,6 @@ source('相关函数.R')
 
 ##数据获取-----------
 load('index_weight.RData')
-load('factor_name.RData')
 load('yield_data.RData')
 
 library(WindR)
@@ -16,7 +15,6 @@ w.start()
 hs300 <- w.wsd("000300.SH","close","2009-01-01","2018-10-31")$Data
 hs300 <- hs300 %>% arrange(DATETIME) %>% transmute(trade_dt = ymd(DATETIME), close = CLOSE,
                                                    hs300 = cal_yield(close))
-w.close()
 ##相关函数---------
 ##每期权重计算收益
 ##外生变量
@@ -83,139 +81,103 @@ to_perform <- function(trade_dt, yield, group_year = F)
 }
 
 ##将rp转化为权重
-to_weight <- function(x, factor_name, index_data, sigma_data, bias)
+#@param x,tibble, 应包含预期收益value, 权重weight
+#@param cov, tibble, 协方差矩阵
+#@param factor_name, list, 风险因子名称
+#@param bias 偏离
+to_weight <- function(x, cov, factor_name, bias)
 {
-  ##合并权重数据
-  factor_total <- x %>% left_join(index_data, by = c('trade_dt', 'wind_code')) %>% 
-    mutate(weight = ifelse(is.na(weight), 0, weight / 100)) %>% 
-    group_by(trade_dt) %>% mutate(weight = weight / sum(weight))
-  
   ##转化行业数据为矩阵并剔除一个行业
-  factor_total <- data.frame(factor_total %>% select(-indus), 
-                             model.matrix( ~ indus + 0, data = factor_total))
+  risk_name <- setdiff(factor_name$risk_name, 'indus')
+  risk_total <- data.frame(x %>% select(one_of(risk_name)), 
+                             model.matrix( ~ indus + 0, data = x))
   
-  factor_total <- as.tibble(factor_total) %>% nest(-trade_dt) %>% 
-    left_join()
+  ##构建协方差矩阵
+  risk_matrix <- cov %>% spread(coef_2, value)
+  risk_matrix <- risk_matrix %>% subset(coef_1 %in% factor_name$alpha_name) %>% 
+    select(coef_1, one_of(factor_name$alpha_name))
+  risk_matrix$coef_1 <- factor(risk_matrix$coef_1, levels = factor_name$alpha_name)
+  risk_matrix <- risk_matrix %>% arrange(coef_1) %>% select(-coef_1)
+  risk_matrix[is.na(risk_matrix)] <- 0
+  temp <- risk_matrix
+  diag(temp) <- 0
+  risk_matrix <- as.matrix(risk_matrix + t(temp))
   
-  risk_name <- setdiff(risk_name, 'indus')
   
   
   ##计算权重
-  temp <- factor_total %>% group_by(trade_dt) %>%
-    do(weight = data.frame(
-      wind_code = .$wind_code,
-      weight = tf_pfp_bench(
-        r_exp = .$value,
-        x_beta = as.matrix(select(., one_of(risk_name), starts_with('indus'))),
-        benchmark = .$weight, 
-        bias = bias,
-        in_bench = in_bench
-      )
-    ))
-  temp %>% unnest(weight)
-  
+  tibble(
+         wind_code = x$wind_code,
+         weight = barra_pfp_bench(
+           r_exp = x$value,
+           x_beta = risk_total,
+           x_alpha = as.matrix(x %>% select(one_of(factor_name$alpha_name))),
+           risk_matrix = risk_matrix,
+           srisk = x$sigma,
+           benchmark = x$weight, 
+           bias = bias
+         )
+       ) %>% subset(abs(weight) > 0.00001)
 }
 
-##将rp转化为组合收益
-tf_rp2yield <- function(x, risk_data, index_data, risk_name, bias, in_bench, weight_save = F, min_trade_dt = min(x$trade_dt))
-{
-  temp <- to_weight(x, risk_data, index_data, risk_name, bias, in_bench) %>% subset(trade_dt >= min_trade_dt)
-  ##计算净值
-  temp_y <- temp %>% with(., to_yield(trade_dt, wind_code, weight)) %>% subset(trade_dt >= min_trade_dt)
-  
-  if(weight_save)
-  {
-    return(list(weight = temp %>% subset(weight != 0), yield = temp_y))
-  }else{
-    return(list(yield = temp_y))
-  }
-}
 
 ##组合求解---------------
 load('rp_ir.RData')
+load('factor_name.RData')
+load('sigma_data.RData')
 
-fun_p <- function(rp_data, factor_temp, risk_name, bias, in_bench, risk_len, cl_len = 2, weight_save = T)
+fun_nest_p <- function(rp_data, risk_name, sigma_data, index_weight, bias, cl_len = 2, weight_save = T)
 {
-  rp_data <- rp_data %>% 
-    left_join(yield_data %>% select(-zf), by = c('trade_dt', 'wind_code')) %>% 
-    subset(suspend == 0) %>% select(-suspend)
+  ##剔除停牌股票
+  rp_data <- rp_data %>% left_join(yield_data %>% ungroup  %>% subset(suspend == 0) %>% select(wind_code, trade_dt) %>% nest(wind_code), by = 'trade_dt') %>% 
+    mutate(value = map2(value, data, function(x, y) inner_join(x, y, by = 'wind_code'))) %>% select(-data)
   
-  param <- expand.grid(bias = bias, in_bench = in_bench, risk_len = risk_len)
-  if(cl_len > 1)
-  {
-    cl <- create_cluster(cl_len) %>% cluster_library(c('dplyr','tidyr')) %>% 
-      cluster_copy(tf_rp2yield) %>% 
-      cluster_copy(rp_data) %>% 
-      cluster_copy(index_weight) %>% 
-      cluster_copy(risk_name) %>% 
-      cluster_copy(tf_pfp_bench) %>% 
-      cluster_copy(to_yield) %>%
-      cluster_copy(to_weight) %>%
-      cluster_copy(yield_data) %>% 
-      cluster_copy(weight_save)
-    
-    temp_total <- param %>% partition(bias, in_bench, risk_len, cluster = cl) %>% 
-      mutate(result = list(tf_rp2yield(
-        rp_data %>% select(trade_dt, wind_code, value),
-        rp_data %>% select(-value),
-        index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
-        risk_name = risk_name[1:risk_len],
-        bias = bias,
-        in_bench = in_bench,
-        weight_save
-      ))) %>% collect()
-  }else{
-    temp_total <- param %>% group_by(bias, in_bench, risk_len) %>% 
-      mutate(result = list(tf_rp2yield(
-        rp_data %>% select(trade_dt, wind_code, value),
-        rp_data %>% select(-value),
-        index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
-        risk_name = risk_name[1:risk_len],
-        bias,
-        in_bench,
-        weight_save
-      )))
-  }
+  ##合并权重
+  rp_data <-
+    rp_data %>% left_join(index_weight %>% nest(-trade_dt), by = 'trade_dt') %>%
+    mutate(value = map2(value, data, function(x, y)
+      left_join(x, y, by = 'wind_code') %>% mutate(weight = ifelse(is.na(weight), 0, weight)) %>%
+        mutate(weight = weight / sum(weight)))) %>% select(-data)
   
-  temp_total %>% mutate(result = map(result, function(x)
-    c(x,
-      list(
-        perform = with(x$yield %>% arrange(trade_dt),
-                       to_perform(trade_dt, zf))
-      ))))
-}
-
-fun_nest_p <- function(rp_data, risk_name, bias, in_bench, risk_len, cl_len = 2, weight_save = T)
-{
-  rp_data <- rp_data %>% left_join(risk_name %>%
-                                     select(trade_dt = end_dt, factor_name),
-                                   by = 'trade_dt')
+  ##合并波动率
+  rp_data <-
+    rp_data %>% subset(trade_dt > min(sigma_data$trade_dt)) %>% 
+    left_join(sigma_data, by = 'trade_dt') %>%
+    mutate(value = map2(value, sigma, function(x, y)
+      left_join(x, y, by = 'wind_code'))) %>% select(-sigma)
   
-  rp_data <- rp_data %>% mutate(value = map2(value, trade_dt, function(x,y) x %>% 
-                                               left_join(yield_data %>% select(-zf) %>% subset(trade_dt == y), by = c('trade_dt', 'wind_code')) %>% 
-                                               subset(suspend == 0) %>% select(-suspend)))
   
-  fun <- function(bias, in_bench, risk_len)
+  ##调整因子名称与风险因子日期一致
+  risk_name <- risk_name %>% group_by(begin_dt, end_dt) %>% 
+    mutate(trade_dt = list(tibble(trade_dt = rp_data$trade_dt) %>% subset(trade_dt <= end_dt & trade_dt > begin_dt))) %>% 
+    ungroup %>% select(trade_dt, end_dt, factor_name) %>% 
+    unnest(trade_dt, .drop = F) %>% 
+    group_by(trade_dt) %>% filter(end_dt == min(end_dt)) %>% select(-end_dt)
+  
+  ##合并风险因子名称
+  rp_data <- rp_data %>% left_join(risk_name, by = 'trade_dt')
+  
+  rp_data <- rp_data %>% subset(trade_dt != 20181011)
+  
+  fun <- function(bias)
   {
     temp_w <- rp_data %>%
       transmute(trade_dt,
-                weight = map2(value, factor_name, function(x, y)
+                weight = pmap(list(value, cov, factor_name), function(x, y, z)
                   to_weight(
-                    x %>% select(trade_dt, wind_code, value),
-                    x %>% select(-value),
-                    index_data = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
-                    risk_name = y$risk_name[1:risk_len],
-                    bias = bias,
-                    in_bench = in_bench
+                    x,
+                    cov = y,
+                    factor_name = z,
+                    bias = bias
                   ))) %>% unnest
     
     ##计算净值
     temp_y <- temp_w %>% with(., to_yield(trade_dt, wind_code, weight))
-    list(weight = temp_w %>% subset(weight != 0), yield = temp_y)
+    list(weight = temp_w, yield = temp_y)
   }
   
   
-  param <- expand.grid(bias = bias, in_bench = in_bench, risk_len = risk_len)
+  param <- expand.grid(bias = bias)
   if(cl_len > 1)
   {
     cl <- create_cluster(cl_len) %>% cluster_library(c('tidyverse')) %>% 
@@ -228,19 +190,11 @@ fun_nest_p <- function(rp_data, risk_name, bias, in_bench, risk_len, cl_len = 2,
       cluster_copy(yield_data) %>% 
       cluster_copy(weight_save)
     
-    temp_total <- param %>% partition(bias, in_bench, risk_len, cluster = cl) %>% 
-      mutate(result = list(fun(
-        bias = bias,
-        in_bench = in_bench,
-        risk_len = risk_len
-      ))) %>% collect()
+    temp_total <- param %>% partition(bias, cluster = cl) %>% 
+      mutate(result = map(bias, fun)) %>% collect()
   }else{
-    temp_total <- param %>% group_by(bias, in_bench, risk_len) %>%
-      mutate(weight = list(fun(
-        bias = bias,
-        in_bench = in_bench,
-        risk_len = risk_len
-      )))
+    temp_total <- param %>% group_by(bias) %>%
+      mutate(result = map(bias, fun))
   }
   
   temp_total %>% mutate(result = map(result, function(x)
@@ -251,49 +205,14 @@ fun_nest_p <- function(rp_data, risk_name, bias, in_bench, risk_len, cl_len = 2,
       ))))
 }
 
-total_sq <- fun_p(
-  rp_data_sq,
-  factor_name$factor_sq$risk_name,
-  bias = 1:10 / 100,
-  in_bench = seq(0.7, 0.95, by = 0.05),
-  risk_len = 2:10,
-  cl_len = 4
-)
-
-total_eq <- fun_p(
-  rp_data_eq,
-  factor_name$factor_eq$risk_name,
-  bias = 1:10 / 100,
-  in_bench = seq(0.7, 0.95, by = 0.05),
-  risk_len = 2:10,
-  cl_len = 4
-)
-
-total_sq_w <- fun_p(
+total_sq_w <- fun_nest_p(
   rp_data_sq_w,
-  factor_name$factor_sq_w$risk_name,
+  factor_name$factor_sq_w,
+  sigma_data = sigma_data,
+  index_weight = index_weight %>% subset(index_code == '000300.SH') %>% select(-index_code),
   bias = 1:10 / 100,
-  in_bench = seq(0.7, 0.95, by = 0.05),
-  risk_len = 2:10,
-  cl_len = 4
+  cl_len = 1
 )
 
-total_sq_3y <- fun_nest_p(
-  rp_data_sq_3y,
-  factor_name$factor_sq_3y,
-  bias = 1:10 / 100,
-  in_bench = seq(0.7, 0.95, by = 0.05),
-  risk_len = 6:10,
-  cl_len = 2
-)
 
-# total_sq_5y <- fun_nest_p(
-#   rp_data_sq_5y,
-#   factor_name$factor_sq_5y,
-#   bias = 1:10 / 100,
-#   in_bench = seq(0.7, 0.95, by = 0.05),
-#   risk_len = 6:10,
-#   cl_len = 2
-# )
-
-save(total_sq, total_eq, total_sq_w, total_sq_3y, total_sq_5y, file = 'result_weight.RData')
+save(total_sq_w, file = 'result_weight_qp.RData')

@@ -8,28 +8,6 @@ load('factor_data_w.RData')
 load('rp_ir.RData')
 
 
-##因子计算-------------------
-##处理因子数据
-##处理因子数据,按顺序正交
-to_factor <- function(factor_data, factor_name)
-{
-  factor_temp <- factor_data %>% select(trade_dt, wind_code, float_value, one_of(factor_name[1]))
-  for(i in 2:length(factor_name))
-  {
-    temp <- factor_temp %>% left_join(factor_data %>% select(trade_dt, wind_code, one_of(factor_name[i])), by = c('wind_code', 'trade_dt')) %>% 
-      group_by(trade_dt) %>% do(value = data.frame(wind_code = .$wind_code, 
-                                                   factor_value = orthogon(unlist(.[,i+3]), data.frame(.[,4:(i+2)]), .$float_value))) %>% 
-      unnest(value) %>% 
-      group_by(trade_dt) %>% 
-      mutate(factor_value = ifelse(is.na(factor_value), 0, factor_value)) %>% 
-      mutate(factor_value = factor_value / sd(factor_value))
-    
-    factor_temp <- factor_temp %>% left_join(temp, by = c('wind_code', 'trade_dt'))
-    names(factor_temp)[i+3] <- factor_name[i]
-  }
-  factor_temp
-}
-
 ##因子异方差检验--------------
 bp_data_fun <- function(yield_data, factor_temp, factor_data)
 {
@@ -51,6 +29,7 @@ coef_temp_tv %>% rename(bptest_tv = bptest) %>%
 ##比较异方差差异
 t.test(coef_temp_eq$bptest, coef_temp_tv$bptest)
 ##因子协方差波动率预测------------
+##获取回归系数及残差项
 to_coef_resid <- function(factor_temp, yield_data)
 {
   fun <- function(x)
@@ -76,6 +55,7 @@ to_coef_resid <- function(factor_temp, yield_data)
   coef_temp %>% ungroup %>% transmute(trade_dt, coef_data = map(lm_data, ~.$coef_data), resid_data = map(lm_data, ~.$resid))
 }
 
+##计算偏离度指标
 bias_test <- function(coef_temp, fun)
 {
   temp <- coef_temp %>% group_by(coef_name) %>% 

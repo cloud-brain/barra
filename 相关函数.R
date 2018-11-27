@@ -115,6 +115,7 @@ orthogon <- function(x, f_matrix, weight)
   }
 }
 
+
 ##最小波动纯因子组合
 min_vol_pfp <- function(x_alpha, x_beta, srisk, risk_matrix = NULL)
 {
@@ -124,81 +125,17 @@ min_vol_pfp <- function(x_alpha, x_beta, srisk, risk_matrix = NULL)
   sigma %*% beta %*% solve(t(beta) %*% sigma %*% beta) %*% cons
 }
 
-##最优组合求解
-best_pfp_bench <- function(r_exp, x_beta, risk_matrix = 0, srisk, benchmark)
-{
-  require(quadprog)
-  nfactor <- ncol(x_beta)
-  x_beta <- as.matrix(x_beta)
-  risk_matrix <- as.matrix(risk_matrix)
-  
-  ##累计权重限制
-  weight <- rep(1, nrow(x_beta))
-  weight_total <- 1
-  
-  ##beta限制
-  beta_expo <- x_beta  ##应剔除一个行业，限制完全共线性
-  beta_total <- t(x_beta) %*% benchmark ##风格暴露与基准一致 
-  
-  ##个股权重限制
-  stock_w <- diag(rep(1, nrow(x_beta)))
-  stock_total <- rep(0, nrow(x_beta))
-  
-  dmat <- diag(srisk) + x_beta %*% risk_matrix %*% t(x_beta) 
-  dvec <- 0.5 * r_exp + diag(srisk) %*% benchmark
-  amat <- cbind(weight, beta_expo, stock_w) %>% as.matrix
-  bvec <- c(weight_total, beta_total, stock_total)
-  
-  output <- solve.QP(Dmat = dmat, dvec = dvec, 
-                     Amat = amat, bvec = bvec, meq = ncol(x_beta) + 1)
-  output$solution
-}
-
 ##天风组合求解
 tf_pfp_bench <- function(r_exp, x_beta, benchmark, bias, in_bench)
 {
   require(ROI)
-  # require(limSolve)
-  # num <- nrow(x_beta)
-  # x_beta <- as.matrix(x_beta)
-  # 
-  # ##等式
-  # ##累计权重限制
-  # weight <- rep(1, num)
-  # weight_total <- 1
-  # 
-  # ##beta限制
-  # beta_expo <- x_beta  ##应剔除一个行业，限制完全共线性
-  # beta_total <- t(x_beta) %*% benchmark ##风格暴露与基准一致
-  # 
-  # ##不等式
-  # ##个股大于基准-0.05(w > w_b - 0.05)
-  # stock_lower <- diag(num)
-  # stock_w_lower <- benchmark - bias
-  # 
-  # ##个股小于基准+0.05(-w > -w_b - 0.05)
-  # stock_upper <- -diag(num)
-  # stock_w_upper <- -benchmark - bias
-  # 
-  # ##个股在指数范围内(sum(w) > in_bench)
-  # stock_index <- ifelse(benchmark == 0 ,0, 1)
-  # weight_index <- in_bench
-  # 
-  # E <- rbind(weight, t(beta_expo))
-  # f <- c(weight_total, beta_total)
-  # G <- rbind(stock_lower, stock_upper, stock_index) %>% as.matrix
-  # h <- c(stock_w_lower, stock_w_upper, weight_index)
-  # 
-  # output <- linp(E = E, F = f, G = G, H = h, Cost = -r_exp,
-  #                ispos = T)
-  # output$X
   x_beta <- x_beta[,!(colMeans(x_beta == 0) == 1)]
   num <- length(r_exp)
   ##beta限制
   beta_con <- L_constraint(t(x_beta), dir = rep('==', ncol(x_beta)), rhs = rep(0, ncol(x_beta)))
   ##合计为0
   add_con <- L_constraint(matrix(rep(1, num), nrow = 1), '==', rhs = 0)
-  ##指数范围
+  ##指数范围内权重
   index_con <- L_constraint(matrix(ifelse(benchmark == 0 ,0, 1), nrow = 1), '>=', rhs = in_bench - 1)
 
   ##求解范围
@@ -215,74 +152,34 @@ tf_pfp_bench <- function(r_exp, x_beta, benchmark, bias, in_bench)
 }
 
 ##barra组合
-barra_pfp_bench <- function(r_exp, x_beta, risk_matrix = 0, srisk, benchmark, sig_thres = 9)
+barra_pfp_bench <- function(r_exp, x_beta, x_alpha, risk_matrix = 0, srisk, benchmark, bias)
 {
-  require(cccp)
-  num <- length(srisk)
-  x_beta <- as.matrix(x_beta)
+  require(ROI)
+  x_beta <- x_beta[,!(colMeans(x_beta == 0) == 1)]
+  num <- length(r_exp)
+  ##beta限制
+  beta_con <- L_constraint(cbind(t(x_beta), 0, 0), dir = rep('==', ncol(x_beta)), rhs = rep(0, ncol(x_beta)))
+  ##合计权重为0
+  add_con <- L_constraint(matrix(c(rep(1, num),0,0), nrow = 1), '==', rhs = 0)
+  ##偏离情况
+  ##调整为两项和
+  l1 <- -rbind(c(rep(0, num), 1, 0), cbind(chol(risk_matrix) %*% t(x_alpha), 0, 0)) 
+  l2 <- -rbind(c(rep(0, num), 0, 1), cbind(diag(sqrt(srisk)), 0, 0))
+  l3 <- -rbind(rep(0, num + 2), c(rep(0, num), 1, 0), c(rep(0, num), 0, 1))
+  sigma_con <- C_constraint(rbind(l1, l2, l3), cones = K_soc(c(nrow(l1), nrow(l2), nrow(l3))), rhs = c(rep(0, nrow(l1)), rep(0, nrow(l2)), c(bias, 0, 0)))
   
-  ##新等式
-  ##线性等式约束
-  ###权重为0
-  weight <- rep(1, num)
-  weight_total <- 0
-  ###beta限制
-  beta_expo <- x_beta  ##应剔除一个行业，避免完全共线性
-  beta_total <- rep(0, ncol(beta_expo))
-  ###综合
-  A <- t(cbind(weight, beta_expo) %>% as.matrix)
-  b <- c(weight_total, beta_total)
+  ##求解范围
+  x_bound <- V_bound(li = 1:(num+2), lb = c(-benchmark, -Inf, -Inf),
+                     ui = 1:(num+2), ub = c(rep(1, num), rep(Inf, 2)),
+                     nobj = num+2)
   
-  ##不等式约束
-  ###个股权重限制
-  stock_weights <- nnoc(G = -diag(nrow(x_beta)), h = benchmark)
-  ###波动率限制
-  sigma_ths <- socc(F = chol(diag(srisk^2) + risk_matrix), g = rep(0,num), d = rep(0,num), f = sig_thres)
-  
-  output <- cccp(q = -r_exp, A = A, b = b, cList = list(stock_weights, sigma_ths), optctrl = ctrl(trace = F, reltol = 1e-5, abstol = 1e-05, feastol = 1e-05))
-  
-  getx(output) + benchmark
-}
-
-##barra组合
-barra_pfp_bench <- function(r_exp, x_beta, risk_matrix = NULL, srisk, benchmark, sig_thres = 9)
-{
-  num <- length(srisk)
-  x_beta <- as.matrix(x_beta)
-  
-
-  ###风险因子及权重限制
-  beta <- cbind(rep(1, num), beta_expo) %>% as.matrix
-  
-  ##协方差矩阵
-  if(is.null(risk_matrix))
-  {
-    risk_matrix <- diag(1/srisk)
-  }else{
-    risk_matrix <- solve(risk_matrix + diag(srisk))
-  }
-  
-  ##求解公式
-  w <- risk_matrix %*% (r_exp - beta %*% solve(t(beta) %*% risk_matrix %*% beta) %*% t(beta) %*% risk_matrix %*% r_exp)
-  
-  ##约束范围
-  adj_param <- sqrt(sig_thres / (t(w) %*% solve(risk_matrix) %*% w))
-  w <- adj_param[1,1] * w
-  
-  which(w + benchmark < 0)[1]
-  
-  getx(output) + benchmark
-}
-
-##icir
-ic_test <- function(trade_dt, f_data, yield_data)
-{
-  temp <- data.frame(trade_dt, x = f_data, y = yield_data) %>% group_by(trade_dt) %>% 
-    do(ic_model = cor.test(.$x, .$y))
-  output <- temp %>% transmute(trade_dt, ic_value = ic_model$estimate, ic_pvalue = ic_model$p.value)
-  print(output %>% mutate(trade_dt =  ymd(trade_dt)) %>% reshape2::melt(id = 'trade_dt') %>%
-    ggplot(aes(x = trade_dt, y = value)) + geom_line() + facet_grid(variable~., scale = 'free'))
-  return(output)
+  op <- OP(
+    objective = c(r_exp, 0, 0),
+    constraints = rbind(beta_con, add_con, sigma_con),
+    bounds = x_bound,
+    maximum = T
+  )
+  ROI_solve(op, solver = "ecos")$solution[1:num] + benchmark
 }
 
 ##wind代码转换
